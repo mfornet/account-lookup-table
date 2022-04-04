@@ -1,5 +1,5 @@
 // import './App.css';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import * as nearAPI from 'near-api-js'
 
 const INFO = '__INFO'
@@ -18,7 +18,6 @@ function setValues(data) {
   localStorage.setItem(INFO, JSON.stringify(data))
 }
 
-// TODO: Remove Lockup class
 // Total Balance
 //     - Lockup
 //         - On Contract
@@ -30,31 +29,6 @@ function setValues(data) {
 //         - Unlocked
 //         - Locked
 //     - Owner
-class Lockup {
-  constructor(params) {
-    this.lockup = params.lockup;
-    this.owner = params.owner;
-    this.total = params.total;
-    this.lockupBalance = params.lockupBalance;
-    this.lockupBalanceOnContract = params.lockupBalanceOnContract;
-    this.liquid = params.liquid;
-    this.staked = params.staked;
-    this.lockupBalanceOnStakingPool = params.lockupBalanceOnStakingPool;
-    this.lockupBalanceOnStakingPoolStaked = params.lockupBalanceOnStakingPoolStaked;
-    this.lockupBalanceOnStakingPoolReady = params.lockupBalanceOnStakingPoolReady;
-    this.lockupBalanceOnStakingPoolTimeToWithdraw = params.lockupBalanceOnStakingPoolTimeToWithdraw;
-    this.unlocked = params.unlocked;
-    this.locked = params.locked;
-    this.ownerBalance = params.ownerBalance;
-    this.pool = params.pool;
-
-
-    this.lastTimeUpdate = new Date(params.lastTimeUpdate);
-    if (this.lastTimeUpdate.toString() === "Invalid Date") {
-      this.lastTimeUpdate = undefined
-    }
-  }
-}
 
 const options = {
   networkId: "mainnet",
@@ -85,8 +59,21 @@ function formatNEAR(amount) {
   return tokens[0] + '.' + tokens[1].substring(0, 2);
 }
 
+function formatValue(amount, nearPrice, currency) {
+  if (currency === 'NEAR') {
+    return formatNEAR(amount) + 'Ⓝ'
+  } else {
+    return '$' + (parseFloat(formatNEAR(amount).replace(',', '')) * nearPrice).toFixed(2).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",")
+  }
+}
+
+async function fetchNearPrice() {
+  const res = await fetch('https://api.binance.com/api/v3/ticker/price?symbol=NEARUSDT')
+  const content = await res.json()
+  return content.price
+}
+
 async function populateFields(lockup) {
-  console.log('populate fields')
   const near = await nearAPI.connect(options)
   const account = await near.account(lockup.lockup)
   const lockupContract = new nearAPI.Contract(account, lockup.lockup, {
@@ -125,11 +112,11 @@ async function populateFields(lockup) {
   lockup.staked = (await stakingContract.get_account({ account_id: lockup.lockup })).staked_balance;
 }
 
-// TODO: Create a reload button (for single accounts && for all accounts)
-// TODO: Single account view
+// TODO: Aggregate all info in an extra row (sum of total/locked/liquid/staked)
 function App() {
   const [table, setTable] = useState(getValues());
-
+  const [nearPrice, setNearPrice] = useState(0.0);
+  const [currency, setCurrency] = useState('NEAR');
 
   const update = async () => {
     const n_table = [...table];
@@ -137,12 +124,33 @@ function App() {
     setTable(n_table);
   }
 
-
-  const updateLockup = async (lockupAccountId = null, force = false) => {
+  const updateLockup = async (lockupAccountId = null) => {
     await Promise.all(table.filter((value) => lockupAccountId === null || value.lockup === lockupAccountId).map(async (value) => {
       await populateFields(value);
       await update();
     }))
+  }
+
+  const updateAll = async (updatePrice = true) => {
+    if (updatePrice) {
+      setNearPrice(await fetchNearPrice());
+    }
+    await Promise.all(table.map(async (value) => {
+      await populateFields(value);
+      await update();
+    }))
+  }
+
+  useEffect(() => {
+    const inner = async () => {
+      setNearPrice(await fetchNearPrice()); await updateAll(false);
+    }
+    inner()
+  }, [nearPrice])
+
+  const setMessage = (msg) => {
+    // TODO: Display message somewhere
+    console.log(msg);
   }
 
   const innerTryCreateEntry = async (lockupAccountId) => {
@@ -151,20 +159,18 @@ function App() {
     try {
       await account.state()
     } catch (e) {
-      // TODO: Add better message
-      console.log('Account doesn`t exist')
+      setMessage('Account doesn`t exist')
       return null;
     }
 
-    table.push(new Lockup({ lockup: lockupAccountId }));
+    table.push({ lockup: lockupAccountId });
     await update();
     await updateLockup(lockupAccountId);
   }
 
   const tryCreateEntry = (lockupAccountId) => {
     if (table.filter((value) => value.lockup === lockupAccountId).length > 0) {
-      // TODO: Put a message somewhere about this
-      console.log(`Account ${lockupAccountId} already exists. Ignore.`)
+      setMessage(`Account ${lockupAccountId} already exists. Ignore.`)
       return;
     }
     innerTryCreateEntry(lockupAccountId);
@@ -184,10 +190,8 @@ function App() {
     update();
   };
 
-  // TODO: Add button to reload everything
-  // TODO: Fetch NEAR Price from Binance
-  // TODO: Allow switching balances between NEAR and equivalent in USDT
-  // TODO: Add indicator that some value is being updated
+  const currencySelectorMenu = currency !== 'NEAR' ? <div><button onClick={() => setCurrency('NEAR')}>NEAR</button> | USDT</div> : <div>NEAR | <button onClick={() => setCurrency('USDT')}>USDT</button></div>
+
   return <div>
     <form>
       <label>
@@ -196,13 +200,19 @@ function App() {
       </label>
       <input type="submit" value="Add" className='button' onClick={createEntry} />
     </form>
-
+    <div>
+      <button className='button' onClick={updateAll}>Reload all</button>
+      <label>Near Price: {nearPrice}</label>
+      <p>Display balance as:</p> {currencySelectorMenu}
+    </div>
     <table className='table table-striped table-sm'>
       <thead>
         <tr>
           <th>Id</th>
           <th>Lockup</th>
+          <th>Copy</th>
           <th>Owner</th>
+          <th>Copy</th>
           <th>Total</th>
           <th>Locked</th>
           <th>Liquid</th>
@@ -220,12 +230,14 @@ function App() {
               {/* TODO: Make a view page to see more details of each contract */}
               {/* TODO: Download all transactions that have been executed so far */}
               {/* TODO: Show reward in the last 2 days (or something like this) */}
-              <td>{simplifyString(val.lockup)}</td>{/* TODO: Copy to clipboard full account (or maybe go to explorer) */}
-              <td>{simplifyString(val.owner)}</td>{/* TODO: Copy to clipboard full account (or maybe go to explorer) */}
-              <td>{formatNEAR(val.total)}</td>
-              <td>{formatNEAR(val.locked)}</td>
-              <td>{formatNEAR(val.liquid)}</td>
-              <td>{formatNEAR(val.staked)}</td>
+              <td>{simplifyString(val.lockup)}</td>
+              <td><button onClick={() => navigator.clipboard.writeText(val.lockup)}>⎘</button></td>
+              <td>{simplifyString(val.owner)}</td>
+              <td><button onClick={() => navigator.clipboard.writeText(val.owner)}>⎘</button></td>
+              <td>{formatValue(val.total, nearPrice, currency)}</td>
+              <td>{formatValue(val.locked, nearPrice, currency)}</td>
+              <td>{formatValue(val.liquid, nearPrice, currency)}</td>
+              <td>{formatValue(val.staked, nearPrice, currency)}</td>
               <td>{val.pool}</td>
               <td><button className='button' onClick={() => updateLockup(val.lockup)}>R</button></td>
               <td><button className='button' onClick={() => removeRow(key)}>X</button></td>
